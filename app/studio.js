@@ -590,6 +590,8 @@ function AiEdit({ job, pickedUrl, onDone }) {
   const [stones, setStones] = useState([]);
   const [stone, setStone] = useState(null);
   const [stoneOnly, setStoneOnly] = useState(job.type === "ai");
+  // przy poprawie samego kamienia GPT trzyma zdjęcie, Gemini potrafi oddać sam wzorzec
+  useEffect(() => { if (stone && stoneOnly) setModels(["gpt"]); }, [stone, stoneOnly]);
   const [gen, setGen] = useState({ open: false, cut: "round", color: "white", view: "angle", busy: false });
   const stoneInput = useRef(null);
   const [extras, setExtras] = useState(job.params?.extraUrls || []);

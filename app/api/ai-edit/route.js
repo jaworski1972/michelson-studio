@@ -19,8 +19,19 @@ function buildStonePrompt({ prompt }) {
     "Re-render ONLY the main centre stone of IMAGE 1 so its facet pattern, brilliance, contrast and sharpness match IMAGE 2, adapted to the stone's exact outline, size, position, perspective and the prongs that hold it.",
     "Keep the stone's cut/shape and its body colour exactly as in IMAGE 1 (a cognac stone stays cognac, a white stone stays white).",
     "EVERYTHING ELSE must stay pixel-identical to IMAGE 1: the metal, prongs, setting, side stones, pavé, ornaments, band, background, shadow, framing and camera angle. Do not move, resize or redesign anything.",
+    "The output MUST be IMAGE 1 (the whole ring, same framing) with only the centre stone improved. NEVER output the loose diamond from IMAGE 2 on its own.",
     prompt ? `Additional note (may be in Polish): ${prompt}` : "",
   ].filter(Boolean).join("\n");
+}
+
+// Odcisk obrazu do kontroli, czy model nie zwrócił czegoś zupełnie innego (np. sam kamień-wzorzec)
+async function signature(buf) {
+  return sharp(buf).greyscale().resize(48, 48, { fit: "fill" }).raw().toBuffer();
+}
+function sigDiff(a, b) {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+  return d / a.length / 255;
 }
 
 // Builds the instruction. Image order sent to the model: [product, ...extra angles, ...style refs]
@@ -213,6 +224,10 @@ export async function POST(request) {
 
   try {
     const auth = await token();
+    // przy poprawie kamienia pilnujemy, żeby wynik był tym samym zdjęciem
+    const baseSig = stoneOnly
+      ? await fetch(imageUrl).then((r) => r.arrayBuffer()).then((b) => upscale(Buffer.from(b), 2000, true, fill)).then((x) => signature(x.buf)).catch(() => null)
+      : null;
     const tasks = [];
     for (const m of models) for (let v = 1; v <= variants; v++) tasks.push({ m, v });
     const settled = await Promise.allSettled(
@@ -224,6 +239,11 @@ export async function POST(request) {
           put(`jobs/${job.id}/ai_${tag}.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type }),
           upscale(buf, 2000, fit, fill),
         ]);
+        if (baseSig) {
+          const diff = sigDiff(baseSig, await signature(big.buf));
+          console.log("stone-check", m, v, diff.toFixed(3));
+          if (diff > 0.1) throw new Error(`${AI_MODELS[m].label} zwrócił inne zdjęcie zamiast poprawionego pierścionka – wynik pominięty (odchylenie ${Math.round(diff * 100)}%)`);
+        }
         const bigBlob = await put(`jobs/${job.id}/ai_${tag}_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
         const label = `${AI_MODELS[m].label}${variants > 1 ? ` · wariant ${v}` : ""}`;
         return [
