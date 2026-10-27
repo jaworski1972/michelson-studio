@@ -20,7 +20,7 @@ if (!existing.length) {
   log("seeded refs", refs.length);
 }
 const refs2 = (await (await fetch(`${BASE}/api/refs`, { headers: H })).json()).refs;
-const refUrls = refs2.filter((r) => /michelson-(venetian|pave)-3-4\./.test(r.name)).map((r) => r.url).slice(0, 2);
+const refUrls = refs2.filter((r) => /michelson-(venetian|pave)-3-4/.test(r.name)).map((r) => r.url).slice(0, 2);
 log("refs used", refUrls.length);
 // 2) the twisted ring: original + 2 other angles
 const main = await up("twist.jpg", "uploads/pierscionek-pleciony.jpg");
