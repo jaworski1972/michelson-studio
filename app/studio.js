@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 import { Brand, fmtDate, fmtSize } from "./ui";
 import {
-  VIDEO_PRESETS, PHOTO_PRESETS, VIDEO_OUTPUTS, BASE_COLOR, AI_MODELS, AI_SUGGESTIONS, METALS, kindOf,
+  VIDEO_PRESETS, PHOTO_PRESETS, VIDEO_OUTPUTS, BASE_COLOR, AI_MODELS, AI_SUGGESTIONS, METALS, REF_MATCH, kindOf,
 } from "@/lib/presets";
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -586,6 +586,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
   const [models, setModels] = useState(["gpt", "gemini"]);
   const [variants, setVariants] = useState(2);
   const [metal, setMetal] = useState("auto");
+  const [fill, setFill] = useState(0.55);
   const [extras, setExtras] = useState(job.params?.extraUrls || []);
   const [refs, setRefs] = useState([]);
   const [chosenRefs, setChosenRefs] = useState(new Set());
@@ -641,7 +642,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        imageUrl: s.url, name: job.input.name, prompt, models, variants, metal,
+        imageUrl: s.url, name: job.input.name, prompt, models, variants, metal, fill,
         extraUrls: extras, refUrls: [...chosenRefs].slice(0, 3), parentId: job.id,
       }),
     }).catch(() => null);
@@ -695,7 +696,12 @@ function AiEdit({ job, pickedUrl, onDone }) {
           ))}
         </div>
 
-        <select className="sel" value={metal} onChange={(e) => setMetal(e.target.value)}>
+        <select className="sel" value={metal} onChange={(e) => {
+          const m = e.target.value;
+          setMetal(m);
+          // podpowiedz wzorce pasujące kolorem metalu (max 2)
+          if (REF_MATCH[m]) setChosenRefs(new Set(refs.filter((r) => REF_MATCH[m].test(r.name || r.url)).slice(0, 2).map((r) => r.url)));
+        }}>
           {Object.entries(METALS).map(([k, m]) => <option key={k} value={k}>Metal: {m.label}</option>)}
         </select>
         <div className="chips">
@@ -703,6 +709,12 @@ function AiEdit({ job, pickedUrl, onDone }) {
             <button key={k} type="button" className={`chip ${models.includes(k) ? "on" : ""}`}
               onClick={() => setModels((p) => (p.includes(k) ? (p.length > 1 ? p.filter((x) => x !== k) : p) : [...p, k]))}>{m.label}</button>
           ))}
+        </div>
+        <div className="ctrl" style={{ margin: 0 }}>
+          <label>Wielkość pierścionka w kadrze (packshot)</label>
+          <div className="seg">
+            {[[0.45, "mała"], [0.55, "jak w sklepie"], [0.7, "duża"]].map(([v, l]) => <button key={v} type="button" className={fill === v ? "on" : ""} onClick={() => setFill(v)}>{l}</button>)}
+          </div>
         </div>
         <div className="ctrl" style={{ margin: 0 }}>
           <label>Wariantów z każdego modelu</label>

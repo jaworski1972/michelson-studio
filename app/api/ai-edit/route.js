@@ -37,6 +37,17 @@ function buildPrompt({ prompt, extras, refs, metal }) {
       "ornaments, engravings and band profile. Do not invent or remove any element — in particular do not add side stones, halos or extra pavé.",
   );
   if (metal && METALS[metal]?.en) lines.push(`Metal: ${METALS[metal].en}. Keep this metal colour accurate.`);
+  lines.push(
+    "House style of our store (michelson.pl): square 1:1 image, pure white seamless background, the ring centred with generous white space, " +
+      "a very soft natural contact shadow under the ring, bright evenly polished metal with clean smooth highlights, " +
+      "crisp bright stones with clear facets. Elegant, minimal, catalogue look."
+  );
+  lines.push(
+    "DIAMONDS are the most important part — render them exactly like Tiffany & Co. catalogue photos: a crisp, high-contrast facet pattern " +
+      "with clearly separated deep black and brilliant white facets (for a round brilliant the star/arrow pattern is clearly visible), " +
+      "a clean bright white to very slightly cool tint, lively sparkle and fire, sharp facet edges. Never milky, hazy, flat, grey or blurry. " +
+      "Keep each stone's cut, shape and size exactly as in IMAGE 1. Small pavé stones must also be individually crisp and bright."
+  );
   lines.push("Photorealistic result, no text or watermarks.", "", "Requested edit (may be in Polish):", prompt);
   return lines.join("\n");
 }
@@ -88,7 +99,7 @@ async function editGpt(urls, text, auth) {
 }
 
 // Powiększenie wyniku AI do sklepu: dłuższy bok `side` px (Lanczos), białe tło, delikatne doostrzenie.
-async function upscale(buf, side, fit = false) {
+async function upscale(buf, side, fit = false, fill = 0.55) {
   if (fit) {
     // packshot: wytnij produkt z białego tła i ustaw go tak, by zajmował ~72% kwadratu
     // model często daje lekko szare tło – rozjaśnij tak, by tło było czysto białe (bez widocznej ramki po dopasowaniu)
@@ -106,7 +117,7 @@ async function upscale(buf, side, fit = false) {
     const flat = await base.linear(bg.map((v) => 255 / v), [0, 0, 0]).png().toBuffer();
     const trimmed = await sharp(flat).trim({ background: "#ffffff", threshold: 12 }).toBuffer({ resolveWithObject: true });
     const tw = trimmed.info.width, th = trimmed.info.height;
-    const target = Math.round(side * 0.72);
+    const target = Math.round(side * fill);
     const k = target / Math.max(tw, th);
     const nw = Math.round(tw * k), nh = Math.round(th * k);
     const left = Math.round((side - nw) / 2), top = Math.round((side - nh) / 2);
@@ -173,6 +184,7 @@ export async function POST(request) {
   const text = buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal });
   const urls = [imageUrl, ...extraUrls, ...refUrls];
   const fit = /packshot/i.test(prompt);
+  const fill = Math.max(0.35, Math.min(0.85, parseFloat(body.fill) || 0.55));
 
   try {
     const auth = await token();
@@ -185,7 +197,7 @@ export async function POST(request) {
         const tag = `${m}${variants > 1 ? `_${v}` : ""}`;
         const [raw, big] = await Promise.all([
           put(`jobs/${job.id}/ai_${tag}.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type }),
-          upscale(buf, 2000, fit),
+          upscale(buf, 2000, fit, fill),
         ]);
         const bigBlob = await put(`jobs/${job.id}/ai_${tag}_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
         const label = `${AI_MODELS[m].label}${variants > 1 ? ` · wariant ${v}` : ""}`;
