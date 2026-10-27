@@ -12,6 +12,10 @@ const imgs = {
   "zolte-michelson-pave-front.webp": "https://michelson.pl/cdn/shop/files/0001-7441532172274095209.webp?width=1500",
   "zolte-michelson-pave-3-4-b.webp": "https://michelson.pl/cdn/shop/files/3458.webp?width=1500",
   "zolte-michelson-pave-bok.webp": "https://michelson.pl/cdn/shop/files/3517.webp?width=1500",
+  "zolte-michelson-princess-3-4.webp": "https://michelson.pl/cdn/shop/files/0001-5140193098233077329.webp?width=1500",
+  "zolte-michelson-venetian-3-4.webp": "https://michelson.pl/cdn/shop/files/0001-3378159715390650546.webp?width=1500",
+  "zolte-michelson-venetian-bok.webp": "https://michelson.pl/cdn/shop/files/3593.webp?width=1500",
+  "dwukolor-michelson-emerald-3-4.png": "https://michelson.pl/cdn/shop/files/0001-3190182059005294937.png?width=1500",
 };
 const have = new Set(((await (await fetch(`${BASE}/api/refs`, { headers: H })).json()).refs || []).map((r) => r.name.replace(/-[A-Za-z0-9]{30}(\.\w+)$/, "$1")));
 for (const [name, url] of Object.entries(imgs)) {
@@ -20,6 +24,6 @@ for (const [name, url] of Object.entries(imgs)) {
   const pathname = `refs/${name}`;
   const r = await fetch(`${BASE}/api/upload`, { method: "POST", headers: H, body: JSON.stringify({ type: "blob.generate-client-token", payload: { pathname, callbackUrl: `${BASE}/api/upload`, clientPayload: null, multipart: false } }) });
   const { clientToken } = await r.json();
-  const b = await put(pathname, buf, { access: "public", token: clientToken, contentType: "image/webp" });
+  const b = await put(pathname, buf, { access: "public", token: clientToken, contentType: name.endsWith(".png") ? "image/png" : "image/webp" });
   console.log("ref", name, buf.length, b.url);
 }
