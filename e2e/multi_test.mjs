@@ -19,7 +19,7 @@ if (!existing.length) {
   for (const f of fs.readdirSync("refs")) refs.push({ url: await up(`refs/${f}`, `refs/${f}`), name: f });
   log("seeded refs", refs.length);
 }
-const refUrls = refs.filter((r) => /koniak|princess/.test(r.name || r.url)).map((r) => r.url).slice(0, 3);
+const refUrls = refs.filter((r) => /koniak/.test(r.name || r.url)).map((r) => r.url).slice(0, 3);
 log("refs used", refUrls.length);
 // 2) the twisted ring: original + 2 other angles
 const main = await up("twist.jpg", "uploads/pierscionek-pleciony.jpg");
