@@ -40,7 +40,8 @@ DEFAULTS = {
     "crop_offset": {"x": 0.5, "y": 0.5},
     # photos
     "photo": {"auto_wb": False, "max_side": 3000, "square": False,
-              "background": "none", "format": "jpg"},
+              "packshot": False, "background": "none", "autocrop": False, "margin": 1.5, "target_side": 2000,
+              "format": "jpg"},
 }
 
 
@@ -423,6 +424,71 @@ def deblur_photo(img, strength):
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
 
+MODEL_PATH = os.environ.get("ISNET_MODEL", "/opt/models/isnet-general-use.onnx")
+_SESSION = None
+
+
+def product_mask(img):
+    """Foreground (product) mask 0..1 using IS-Net (dichotomous image segmentation)."""
+    global _SESSION
+    import onnxruntime as ort
+    if _SESSION is None:
+        _SESSION = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+    h, w = img.shape[:2]
+    x = cv2.resize(cv2.cvtColor(img, cv2.COLOR_BGR2RGB), (1024, 1024),
+                   interpolation=cv2.INTER_LANCZOS4).astype(np.float32) / 255.0
+    x = x / max(1e-6, float(x.max())) - 0.5
+    x = x.transpose(2, 0, 1)[None]
+    out = _SESSION.run(None, {_SESSION.get_inputs()[0].name: x})[0][0, 0]
+    m = (out - out.min()) / max(1e-6, float(out.max() - out.min()))
+    m = cv2.resize(m, (w, h), interpolation=cv2.INTER_LINEAR)
+    # keep only significant blobs (drops dust specks)
+    bin_ = (m > 0.5).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(bin_, 8)
+    if n > 1:
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        keep = np.zeros(n, bool)
+        keep[1:] = areas >= max(50, areas.max() * 0.02)
+        support = cv2.dilate(keep[lab].astype(np.uint8), np.ones((15, 15), np.uint8))
+        m = m * support
+    return m.astype(np.float32)
+
+
+def packshot(img, ph):
+    """Neutralise colour cast and exposure using the background, optionally put product on pure white."""
+    m = product_mask(img)
+    f = img.astype(np.float32)
+    bg = m < 0.05
+    if bg.sum() > 1000:
+        bgc = np.median(f[bg], axis=0)
+        f = f * (bgc.mean() / np.maximum(bgc, 1))         # remove colour cast
+        lum = float(f[bg].mean())
+        target = 238.0
+        f = f * min(2.2, max(0.6, target / max(lum, 1)))   # background -> near white
+    f = np.clip(f, 0, 255)
+    if ph.get("background") == "white":
+        a = np.clip((m - 0.12) / 0.76, 0, 1)
+        a = cv2.GaussianBlur(a, (0, 0), 0.8)[:, :, None]
+        f = f * a + 255.0 * (1 - a)
+    out = f.astype(np.uint8)
+    if ph.get("autocrop"):
+        ys, xs = np.where(m > 0.5)
+        if len(xs):
+            x0, x1, y0, y1 = xs.min(), xs.max(), ys.min(), ys.max()
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            margin = float(ph.get("margin", 1.5))
+            side = int(max(x1 - x0, y1 - y0) * margin)
+            pad = side
+            fill = (255, 255, 255) if ph.get("background") == "white" else None
+            if fill:
+                cp = cv2.copyMakeBorder(out, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=fill)
+            else:
+                cp = cv2.copyMakeBorder(out, pad, pad, pad, pad, cv2.BORDER_REFLECT)
+            X, Y = int(cx - side / 2 + pad), int(cy - side / 2 + pad)
+            out = cp[Y:Y + side, X:X + side]
+    return out
+
+
 def load_photo(path):
     img = cv2.imread(path, cv2.IMREAD_COLOR)
     if img is None:
@@ -447,6 +513,13 @@ def process_photo(inp, outdir, p, progress):
         progress("denoise", 30, "odszumianie", force=True)
     if ph.get("auto_wb"):
         out = gray_world_wb(out)
+    if ph.get("packshot") or ph.get("background") == "white" or ph.get("autocrop"):
+        out = packshot(out, ph)
+        ts = int(ph.get("target_side") or 0)
+        if ts and max(out.shape[:2]) < ts:
+            k = ts / max(out.shape[:2])
+            out = cv2.resize(out, (int(out.shape[1] * k), int(out.shape[0] * k)), interpolation=cv2.INTER_LANCZOS4)
+        progress("packshot", 40, "tło i kadr", force=True)
     out = apply_color_photo(out, p["color"])
     progress("color", 50, "kolor", force=True)
     if p["deblur"]["enabled"]:
