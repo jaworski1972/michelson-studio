@@ -12,7 +12,7 @@ const GATEWAY = "https://ai-gateway.vercel.sh/v1";
 const BLOB_RE = /^https:\/\/[a-z0-9.-]+\.blob\.vercel-storage\.com\//;
 
 // Builds the instruction. Image order sent to the model: [product, ...extra angles, ...style refs]
-function buildPrompt({ prompt, extras, refs, metal }) {
+function buildPrompt({ prompt, extras, refs, metal, stone }) {
   const lines = [
     "You are retouching a professional jewelry product photo for an online store.",
     "IMAGE 1 is the product to edit — the result must show exactly this piece of jewelry, from the same camera angle and perspective as IMAGE 1.",
@@ -48,6 +48,15 @@ function buildPrompt({ prompt, extras, refs, metal }) {
       "a clean bright white to very slightly cool tint, lively sparkle and fire, sharp facet edges. Never milky, hazy, flat, grey or blurry. " +
       "Keep each stone's cut, shape and size exactly as in IMAGE 1. Small pavé stones must also be individually crisp and bright."
   );
+  if (stone) {
+    const n = 2 + extras + refs;
+    lines.push(
+      `IMAGE ${n} (the last image) is the TARGET LOOK for the MAIN (centre) STONE. Re-render the main stone of IMAGE 1 so that its facet pattern, ` +
+        "brilliance, contrast, sharpness and clarity match this reference stone, adapted to the main stone's exact outline, size, position, " +
+        "perspective and prongs in IMAGE 1. Keep the main stone's cut/shape and its body colour exactly as in IMAGE 1 " +
+        "(e.g. a cognac stone stays cognac). Do not change the setting, prongs or any other stones."
+    );
+  }
   lines.push("Photorealistic result, no text or watermarks.", "", "Requested edit (may be in Polish):", prompt);
   return lines.join("\n");
 }
@@ -163,6 +172,7 @@ export async function POST(request) {
   const { imageUrl, name, prompt, parentId } = body;
   const extraUrls = (body.extraUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 4);
   const refUrls = (body.refUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 3);
+  const stoneUrl = BLOB_RE.test(body.stoneUrl || "") ? body.stoneUrl : null;
   const models = (Array.isArray(body.models) ? body.models : [body.model || "gemini"]).filter((m) => AI_MODELS[m]);
   const variants = Math.max(1, Math.min(3, parseInt(body.variants || 1, 10)));
   const metal = METALS[body.metal] ? body.metal : "auto";
@@ -173,7 +183,7 @@ export async function POST(request) {
     id: newJobId(),
     type: "ai",
     input: { url: imageUrl, name: name || "zdjecie.jpg" },
-    params: { prompt, models, variants, metal, extraUrls, refUrls },
+    params: { prompt, models, variants, metal, extraUrls, refUrls, stoneUrl },
     presetName: `Edycja AI · ${models.map((m) => AI_MODELS[m].label).join(" + ")}${variants > 1 ? ` · ${variants} warianty` : ""}`,
     parentId: parentId || null,
     user: user?.name || "?",
@@ -181,8 +191,8 @@ export async function POST(request) {
   };
   await saveJob(job);
   const t0 = Date.now();
-  const text = buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal });
-  const urls = [imageUrl, ...extraUrls, ...refUrls];
+  const text = buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal, stone: !!stoneUrl });
+  const urls = [imageUrl, ...extraUrls, ...refUrls, ...(stoneUrl ? [stoneUrl] : [])];
   const fit = /packshot/i.test(prompt);
   const fill = Math.max(0.35, Math.min(0.85, parseFloat(body.fill) || 0.55));
 

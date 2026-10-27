@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 import { Brand, fmtDate, fmtSize } from "./ui";
 import {
-  VIDEO_PRESETS, PHOTO_PRESETS, VIDEO_OUTPUTS, BASE_COLOR, AI_MODELS, AI_SUGGESTIONS, METALS, REF_MATCH, kindOf,
+  VIDEO_PRESETS, PHOTO_PRESETS, VIDEO_OUTPUTS, BASE_COLOR, AI_MODELS, AI_SUGGESTIONS, METALS, REF_MATCH, STONE_CUTS, STONE_COLORS, STONE_VIEWS, kindOf,
 } from "@/lib/presets";
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -587,6 +587,10 @@ function AiEdit({ job, pickedUrl, onDone }) {
   const [variants, setVariants] = useState(2);
   const [metal, setMetal] = useState("auto");
   const [fill, setFill] = useState(0.55);
+  const [stones, setStones] = useState([]);
+  const [stone, setStone] = useState(null);
+  const [gen, setGen] = useState({ open: false, cut: "round", color: "white", view: "angle", busy: false });
+  const stoneInput = useRef(null);
   const [extras, setExtras] = useState(job.params?.extraUrls || []);
   const [refs, setRefs] = useState([]);
   const [chosenRefs, setChosenRefs] = useState(new Set());
@@ -595,6 +599,39 @@ function AiEdit({ job, pickedUrl, onDone }) {
   const [err, setErr] = useState("");
   const extraInput = useRef(null);
   const refInput = useRef(null);
+
+  useEffect(() => {
+    fetch("/api/stones").then((r) => r.json()).then((j) => setStones(j.stones || [])).catch(() => {});
+  }, []);
+
+  async function generateStone() {
+    setGen((g) => ({ ...g, busy: true }));
+    setErr("");
+    const r = await fetch("/api/stones", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cut: gen.cut, color: gen.color, view: gen.view }) }).catch(() => null);
+    const j = r ? await r.json().catch(() => ({})) : {};
+    if (j.stone) { setStones((p) => [j.stone, ...p]); setStone(j.stone.url); setGen((g) => ({ ...g, busy: false, open: false })); }
+    else { setErr(j.error || "Nie udało się wygenerować kamienia"); setGen((g) => ({ ...g, busy: false })); }
+  }
+
+  async function addStones(files) {
+    setUpBusy("stone");
+    try {
+      for (const f of files) {
+        const url = await uploadTo("stones", f);
+        setStones((p) => [{ url, name: f.name }, ...p]);
+        setStone(url);
+      }
+    } catch (e) { setErr(e.message); }
+    setUpBusy("");
+  }
+
+  async function removeStone(url) {
+    if (!confirm("Usunąć ten kamień z biblioteki?")) return;
+    await fetch("/api/stones", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    setStones((p) => p.filter((x) => x.url !== url));
+    if (stone === url) setStone(null);
+  }
 
   useEffect(() => {
     fetch("/api/refs").then((r) => r.json()).then((j) => {
@@ -642,7 +679,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        imageUrl: s.url, name: job.input.name, prompt, models, variants, metal, fill,
+        imageUrl: s.url, name: job.input.name, prompt, models, variants, metal, fill, stoneUrl: stone,
         extraUrls: extras, refUrls: [...chosenRefs].slice(0, 3), parentId: job.id,
       }),
     }).catch(() => null);
@@ -688,6 +725,39 @@ function AiEdit({ job, pickedUrl, onDone }) {
           </button>
           <input ref={refInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addRefs([...e.target.files]); e.target.value = ""; }} />
         </div>
+
+        <div className="mini-label">Kamień wzorcowy – AI nada kamieniowi głównemu wygląd tego kamienia (facetki, blask), zachowując kształt i kolor</div>
+        <div className="thumbs">
+          {stones.map((st) => (
+            <button key={st.url} className={`thumb ref ${stone === st.url ? "on" : ""}`} title={`${st.name} – kliknij, żeby wybrać. Prawy przycisk – usuń.`}
+              onClick={() => setStone(stone === st.url ? null : st.url)}
+              onContextMenu={(e) => { e.preventDefault(); removeStone(st.url); }}>
+              <img src={st.url} alt={st.name} />
+            </button>
+          ))}
+          <button className="thumb add" title="Wygeneruj idealny kamień" onClick={() => setGen((g) => ({ ...g, open: !g.open }))}>✦</button>
+          <button className="thumb add" title="Wgraj własne zdjęcie makro kamienia" onClick={() => stoneInput.current?.click()} disabled={upBusy === "stone"}>
+            {upBusy === "stone" ? <span className="spinner dark" /> : "+"}
+          </button>
+          <input ref={stoneInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addStones([...e.target.files]); e.target.value = ""; }} />
+        </div>
+        {gen.open && (
+          <div className="note" style={{ display: "grid", gap: 6 }}>
+            <b style={{ color: "var(--ink)" }}>Wygeneruj idealny kamień</b>
+            <select className="sel" value={gen.cut} onChange={(e) => setGen((g) => ({ ...g, cut: e.target.value }))}>
+              {Object.entries(STONE_CUTS).map(([k, c]) => <option key={k} value={k}>Szlif: {c.label}</option>)}
+            </select>
+            <select className="sel" value={gen.color} onChange={(e) => setGen((g) => ({ ...g, color: e.target.value }))}>
+              {Object.entries(STONE_COLORS).map(([k, c]) => <option key={k} value={k}>Kolor: {c.label}</option>)}
+            </select>
+            <select className="sel" value={gen.view} onChange={(e) => setGen((g) => ({ ...g, view: e.target.value }))}>
+              {Object.entries(STONE_VIEWS).map(([k, c]) => <option key={k} value={k}>Ujęcie: {c.label}</option>)}
+            </select>
+            <button className="btn small primary" disabled={gen.busy} onClick={generateStone}>
+              {gen.busy ? <><span className="spinner" /> Generowanie…</> : "Generuj (ok. 20 s)"}
+            </button>
+          </div>
+        )}
 
         <textarea className="prompt" placeholder="Np. dopasuj pierścionek do palca, żeby siedział prosto" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         <div className="chips">
