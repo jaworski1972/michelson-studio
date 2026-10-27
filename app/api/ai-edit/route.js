@@ -88,7 +88,24 @@ async function editGpt(urls, text, auth) {
 }
 
 // Powiększenie wyniku AI do sklepu: dłuższy bok `side` px (Lanczos), białe tło, delikatne doostrzenie.
-async function upscale(buf, side) {
+async function upscale(buf, side, fit = false) {
+  if (fit) {
+    // packshot: wytnij produkt z białego tła i ustaw go tak, by zajmował ~72% kwadratu
+    const flat = await sharp(buf).flatten({ background: "#ffffff" }).png().toBuffer();
+    const trimmed = await sharp(flat).trim({ background: "#ffffff", threshold: 18 }).toBuffer({ resolveWithObject: true });
+    const tw = trimmed.info.width, th = trimmed.info.height;
+    const target = Math.round(side * 0.72);
+    const k = target / Math.max(tw, th);
+    const nw = Math.round(tw * k), nh = Math.round(th * k);
+    const left = Math.round((side - nw) / 2), top = Math.round((side - nh) / 2);
+    let pipe = sharp(trimmed.data).resize(nw, nh, { kernel: "lanczos3" });
+    if (k > 1) pipe = pipe.sharpen({ sigma: 0.7, m1: 0.6, m2: 1.2 });
+    const out = await pipe
+      .extend({ top, bottom: side - nh - top, left, right: side - nw - left, background: "#ffffff" })
+      .jpeg({ quality: 94, chromaSubsampling: "4:4:4", mozjpeg: true })
+      .toBuffer({ resolveWithObject: true });
+    return { buf: out.data, w: out.info.width, h: out.info.height };
+  }
   const img = sharp(buf).flatten({ background: "#ffffff" });
   const meta = await img.metadata();
   const long = Math.max(meta.width || 0, meta.height || 0);
@@ -143,6 +160,7 @@ export async function POST(request) {
   const t0 = Date.now();
   const text = buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal });
   const urls = [imageUrl, ...extraUrls, ...refUrls];
+  const fit = /packshot/i.test(prompt);
 
   try {
     const auth = await token();
@@ -155,7 +173,7 @@ export async function POST(request) {
         const tag = `${m}${variants > 1 ? `_${v}` : ""}`;
         const [raw, big] = await Promise.all([
           put(`jobs/${job.id}/ai_${tag}.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type }),
-          upscale(buf, 2000),
+          upscale(buf, 2000, fit),
         ]);
         const bigBlob = await put(`jobs/${job.id}/ai_${tag}_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
         const label = `${AI_MODELS[m].label}${variants > 1 ? ` · wariant ${v}` : ""}`;
