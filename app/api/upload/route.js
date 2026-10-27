@@ -12,7 +12,7 @@ export async function POST(request) {
       body,
       request,
       onBeforeGenerateToken: async (pathname) => {
-        if (!pathname.startsWith("uploads/")) throw new Error("Zła ścieżka");
+        if (!pathname.startsWith("uploads/") && !pathname.startsWith("refs/")) throw new Error("Zła ścieżka");
         return {
           allowedContentTypes: ["video/*", "image/*", "application/octet-stream"],
           maximumSizeInBytes: 3 * 1024 * 1024 * 1024,

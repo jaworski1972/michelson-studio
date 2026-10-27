@@ -454,7 +454,7 @@ def product_mask(img):
     return m.astype(np.float32)
 
 
-def studio_look(f, alpha, strength):
+def studio_look(f, alpha, strength, metal="white"):
     """Catalogue look on the product only: local contrast (polished metal), deeper blacks and
     brighter highlights (crisp facets), neutral metal."""
     img = np.clip(f, 0, 255).astype(np.uint8)
@@ -472,10 +472,33 @@ def studio_look(f, alpha, strength):
     w = alpha * strength
     Lout = Lf * (1 - w) + L2 * w
     lab[:, :, 0] = np.clip(Lout * 255, 0, 255).astype(np.uint8)
-    # slightly reduce colour noise / cast on the product (white metals look cleaner)
     ab = lab[:, :, 1:].astype(np.float32) - 128
-    lab[:, :, 1:] = np.clip(ab * (1 - 0.35 * w[:, :, None]) + 128, 0, 255).astype(np.uint8)
+    if metal == "white":
+        # white gold / platinum: remove residual colour cast for a clean neutral metal
+        ab = ab * (1 - 0.35 * w[:, :, None])
+    else:
+        # yellow / rose gold: keep and slightly enrich the warm colour instead of washing it out
+        ab = ab * (1 + 0.18 * w[:, :, None])
+        if metal == "yellow":
+            ab[:, :, 0] += 3.0 * w  # nudge greenish yellows towards a warm 18k gold
+    lab[:, :, 1:] = np.clip(ab + 128, 0, 255).astype(np.uint8)
     return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR).astype(np.float32)
+
+
+def detect_metal(f, alpha):
+    """'white' | 'yellow' | 'rose' from the colour of bright product pixels."""
+    img = np.clip(f, 0, 255).astype(np.uint8)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB).astype(np.float32)
+    m = (alpha > 0.6) & (lab[:, :, 0] > 90)
+    if m.sum() < 200:
+        return "white"
+    a = float(np.median(lab[:, :, 1][m]) - 128)
+    b = float(np.median(lab[:, :, 2][m]) - 128)
+    if b > 12 and a > 8:
+        return "rose"
+    if b > 12:
+        return "yellow"
+    return "white"
 
 
 def add_soft_shadow(f, alpha, strength=0.35):
@@ -513,7 +536,10 @@ def packshot(img, ph):
     a2 = cv2.GaussianBlur(np.clip((m - 0.12) / 0.76, 0, 1), (0, 0), 0.8)
     studio = float(ph.get("studio", 0) or 0)
     if studio > 0:
-        f = studio_look(f, a2, studio)
+        metal = ph.get("metal") or "auto"
+        if metal == "auto":
+            metal = detect_metal(f, a2)
+        f = studio_look(f, a2, studio, metal)
     if ph.get("background") == "white":
         a = a2[:, :, None]
         f = f * a + 255.0 * (1 - a)

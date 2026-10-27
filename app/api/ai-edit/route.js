@@ -4,26 +4,49 @@ import sharp from "sharp";
 import { getVercelOidcToken } from "@vercel/oidc";
 import { userFromRequest } from "@/lib/auth";
 import { newJobId, saveJob, writeResult } from "@/lib/jobs";
-import { AI_MODELS } from "@/lib/presets";
+import { AI_MODELS, METALS } from "@/lib/presets";
 
 export const maxDuration = 300;
 
 const GATEWAY = "https://ai-gateway.vercel.sh/v1";
+const BLOB_RE = /^https:\/\/[a-z0-9.-]+\.blob\.vercel-storage\.com\//;
 
-
-const GUARD =
-  "You are retouching a professional jewelry product photo for an online store. " +
-  "Apply ONLY the edit requested below. Keep the jewelry design exactly identical: the same stones " +
-  "(shape, size, count, cut, color), prongs, setting, band profile, engravings and metal color. " +
-  "Keep the hand, skin, nails, lighting, background and framing unchanged unless the edit asks for it. " +
-  "Photorealistic result, no added text or watermarks.\n\nRequested edit (may be in Polish): ";
+// Builds the instruction. Image order sent to the model: [product, ...extra angles, ...style refs]
+function buildPrompt({ prompt, extras, refs, metal }) {
+  const lines = [
+    "You are retouching a professional jewelry product photo for an online store.",
+    "IMAGE 1 is the product to edit — the result must show exactly this piece of jewelry.",
+  ];
+  if (extras > 0) {
+    lines.push(
+      `IMAGES 2–${1 + extras} show the SAME ring from other angles. Use them only to read details correctly ` +
+        "(number and placement of stones, prongs, ornaments, milgrain, band profile). Keep the camera angle of IMAGE 1."
+    );
+  }
+  if (refs > 0) {
+    const a = 2 + extras;
+    const b = 1 + extras + refs;
+    lines.push(
+      `IMAGE${refs > 1 ? `S ${a}–${b} are` : ` ${a} is`} STYLE REFERENCE${refs > 1 ? "S" : ""} from our photo retoucher (different products). ` +
+        "Copy ONLY the look: lighting, background, shadow, framing, metal polish and stone brilliance. " +
+        "NEVER copy the jewelry design, stones or ornaments from the style references."
+    );
+  }
+  lines.push(
+    "Keep the jewelry design exactly identical to IMAGE 1: same stones (shape, size, count, cut, color), prongs, setting, " +
+      "ornaments, engravings and band profile. Do not invent or remove any element."
+  );
+  if (metal && METALS[metal]?.en) lines.push(`Metal: ${METALS[metal].en}. Keep this metal colour accurate.`);
+  lines.push("Photorealistic result, no text or watermarks.", "", "Requested edit (may be in Polish):", prompt);
+  return lines.join("\n");
+}
 
 async function token() {
   if (process.env.AI_GATEWAY_API_KEY) return process.env.AI_GATEWAY_API_KEY;
   return getVercelOidcToken();
 }
 
-async function editGemini(imageUrl, prompt, auth) {
+async function editGemini(urls, text, auth) {
   const r = await fetch(`${GATEWAY}/chat/completions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" },
@@ -33,10 +56,7 @@ async function editGemini(imageUrl, prompt, auth) {
       messages: [
         {
           role: "user",
-          content: [
-            { type: "text", text: GUARD + prompt },
-            { type: "image_url", image_url: { url: imageUrl } },
-          ],
+          content: [{ type: "text", text }, ...urls.map((url) => ({ type: "image_url", image_url: { url } }))],
         },
       ],
       stream: false,
@@ -50,11 +70,11 @@ async function editGemini(imageUrl, prompt, auth) {
   return dataUrlToBuffer(img);
 }
 
-async function editGpt(imageUrl, prompt, auth) {
+async function editGpt(urls, text, auth) {
   const r = await fetch(`${GATEWAY}/images/edits`, {
     method: "POST",
     headers: { Authorization: `Bearer ${auth}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: AI_MODELS.gpt.id, prompt: GUARD + prompt, images: [{ image_url: imageUrl }] }),
+    body: JSON.stringify({ model: AI_MODELS.gpt.id, prompt: text, images: urls.map((image_url) => ({ image_url })) }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j?.error?.message || `AI Gateway ${r.status}`);
@@ -88,54 +108,82 @@ function dataUrlToBuffer(u) {
   return { buf: Buffer.from(m[2], "base64"), type: m[1] };
 }
 
-// body: { imageUrl, name, prompt, model: 'gemini'|'gpt', parentId? }
+function friendly(e) {
+  const msg = String(e?.message || e);
+  if (/free tier|paid credits|top-up|insufficient/i.test(msg)) {
+    return "Edycja AI wymaga doładowania kredytów AI Gateway w Vercelu (Vercel → AI Gateway → Top up).";
+  }
+  return msg;
+}
+
+// body: { imageUrl, extraUrls?: [], refUrls?: [], name, prompt, models?: ['gemini','gpt'] | model, variants?: 1-3, metal?, parentId? }
 export async function POST(request) {
   const user = userFromRequest(request);
-  const { imageUrl, name, prompt, model = "gemini", parentId } = await request.json().catch(() => ({}));
-  if (!imageUrl || !prompt?.trim()) return NextResponse.json({ error: "Podaj zdjęcie i polecenie" }, { status: 400 });
-  if (!/^https:\/\/[a-z0-9.-]+\.blob\.vercel-storage\.com\//.test(imageUrl)) {
-    return NextResponse.json({ error: "Nieprawidłowy plik" }, { status: 400 });
-  }
+  const body = await request.json().catch(() => ({}));
+  const { imageUrl, name, prompt, parentId } = body;
+  const extraUrls = (body.extraUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 4);
+  const refUrls = (body.refUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 3);
+  const models = (Array.isArray(body.models) ? body.models : [body.model || "gemini"]).filter((m) => AI_MODELS[m]);
+  const variants = Math.max(1, Math.min(3, parseInt(body.variants || 1, 10)));
+  const metal = METALS[body.metal] ? body.metal : "auto";
+  if (!imageUrl || !prompt?.trim() || !models.length) return NextResponse.json({ error: "Podaj zdjęcie i polecenie" }, { status: 400 });
+  if (!BLOB_RE.test(imageUrl)) return NextResponse.json({ error: "Nieprawidłowy plik" }, { status: 400 });
+
   const job = {
     id: newJobId(),
     type: "ai",
     input: { url: imageUrl, name: name || "zdjecie.jpg" },
-    params: { prompt, model },
-    presetName: `Edycja AI · ${AI_MODELS[model]?.label || model}`,
+    params: { prompt, models, variants, metal, extraUrls, refUrls },
+    presetName: `Edycja AI · ${models.map((m) => AI_MODELS[m].label).join(" + ")}${variants > 1 ? ` · ${variants} warianty` : ""}`,
     parentId: parentId || null,
     user: user?.name || "?",
     createdAt: new Date().toISOString(),
   };
   await saveJob(job);
   const t0 = Date.now();
+  const text = buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal });
+  const urls = [imageUrl, ...extraUrls, ...refUrls];
+
   try {
     const auth = await token();
-    const { buf, type } = model === "gpt" ? await editGpt(imageUrl, prompt, auth) : await editGemini(imageUrl, prompt, auth);
-    const ext = type.includes("jpeg") ? "jpg" : type.includes("webp") ? "webp" : "png";
-    const raw = await put(`jobs/${job.id}/ai.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type });
-    const big = await upscale(buf, 2000);
-    const bigBlob = await put(`jobs/${job.id}/ai_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
+    const tasks = [];
+    for (const m of models) for (let v = 1; v <= variants; v++) tasks.push({ m, v });
+    const settled = await Promise.allSettled(
+      tasks.map(async ({ m, v }) => {
+        const { buf, type } = m === "gpt" ? await editGpt(urls, text, auth) : await editGemini(urls, text, auth);
+        const ext = type.includes("jpeg") ? "jpg" : type.includes("webp") ? "webp" : "png";
+        const tag = `${m}${variants > 1 ? `_${v}` : ""}`;
+        const [raw, big] = await Promise.all([
+          put(`jobs/${job.id}/ai_${tag}.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type }),
+          upscale(buf, 2000),
+        ]);
+        const bigBlob = await put(`jobs/${job.id}/ai_${tag}_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
+        const label = `${AI_MODELS[m].label}${variants > 1 ? ` · wariant ${v}` : ""}`;
+        return [
+          { key: `ai_${tag}`, label: `${label} · ${big.w}×${big.h} JPG`, file: `ai_${tag}_2000.jpg`, url: bigBlob.url, size: big.buf.length, variant: true, w: big.w, h: big.h },
+          { key: `ai_${tag}_raw`, label: `${label} · oryginał z modelu`, file: `ai_${tag}.${ext}`, url: raw.url, size: buf.length },
+        ];
+      })
+    );
+    const outputs = settled.filter((s) => s.status === "fulfilled").flatMap((s) => s.value);
+    const errors = settled.filter((s) => s.status === "rejected").map((s) => friendly(s.reason));
+    if (!outputs.length) throw new Error(errors[0] || "Brak wyników");
+    // najpierw wersje 2000 px, potem surowe
+    outputs.sort((a, b) => (b.variant ? 1 : 0) - (a.variant ? 1 : 0));
+    const first = outputs[0];
     const result = {
       ok: true,
       finishedAt: new Date().toISOString(),
       seconds: Math.round((Date.now() - t0) / 100) / 10,
-      info: { w: big.w, h: big.h },
-      outputs: [
-        { key: "ai", label: `Edycja AI · ${big.w}×${big.h} (JPG)`, file: "ai_2000.jpg", url: bigBlob.url, size: big.buf.length },
-        { key: "ai_raw", label: "Edycja AI · oryginał z modelu", file: `ai.${ext}`, url: raw.url, size: buf.length },
-      ],
-      previews: { before: imageUrl, after: bigBlob.url },
+      info: { w: first.w, h: first.h },
+      outputs,
+      warnings: errors.length ? errors : undefined,
+      previews: { before: imageUrl, after: first.url },
     };
     await writeResult(job.id, result);
     return NextResponse.json({ job: { ...job, result, status: "done" } });
   } catch (e) {
-    const credits = /free tier|paid credits|top-up|insufficient/i.test(e.message);
-    const result = {
-      ok: false,
-      error: credits
-        ? "Edycja AI wymaga doładowania kredytów AI Gateway w Vercelu (Vercel → AI Gateway → Top up). Po doładowaniu spróbuj ponownie."
-        : `Edycja AI nie powiodła się: ${e.message}`,
-    };
+    const result = { ok: false, error: `Edycja AI nie powiodła się: ${friendly(e)}` };
     await writeResult(job.id, result);
     return NextResponse.json({ job: { ...job, result, status: "error" } });
   }

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { upload } from "@vercel/blob/client";
 import { Brand, fmtDate, fmtSize } from "./ui";
 import {
-  VIDEO_PRESETS, PHOTO_PRESETS, VIDEO_OUTPUTS, BASE_COLOR, AI_MODELS, AI_SUGGESTIONS, kindOf,
+  VIDEO_PRESETS, PHOTO_PRESETS, VIDEO_OUTPUTS, BASE_COLOR, AI_MODELS, AI_SUGGESTIONS, METALS, kindOf,
 } from "@/lib/presets";
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
@@ -455,14 +455,17 @@ function JobModal({ job, onClose, onRerun, onDelete, onAiDone }) {
   const res = job.result;
   const outs = res?.outputs || [];
   const videos = outs.filter((o) => o.file?.endsWith(".mp4"));
+  const variants = outs.filter((o) => o.variant);
   const [view, setView] = useState("compare");
+  const [pick, setPick] = useState(0);
   useEffect(() => {
     const k = (e) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
   }, [onClose]);
 
-  const canCompare = res?.previews?.before && res?.previews?.after;
+  const after = variants.length ? variants[Math.min(pick, variants.length - 1)].url : res?.previews?.after;
+  const canCompare = res?.previews?.before && after;
   const shownVideo = videos.find((v) => v.key === view);
 
   return (
@@ -502,14 +505,25 @@ function JobModal({ job, onClose, onRerun, onDelete, onAiDone }) {
                     ))}
                   </div>
                 )}
+                {variants.length > 1 && (
+                  <div className="variants">
+                    {variants.map((v, i) => (
+                      <button key={v.key} className={`variant ${i === pick ? "on" : ""}`} onClick={() => setPick(i)} title={v.label}>
+                        <img src={v.url} alt={v.label} />
+                        <span>{v.label.split(" · ").slice(0, 2).join(" · ")}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 {shownVideo ? (
                   <video className="player" src={shownVideo.url} controls autoPlay loop muted playsInline />
                 ) : canCompare ? (
-                  <Compare before={res.previews.before} after={res.previews.after} />
+                  <Compare key={after} before={res.previews.before} after={after} />
                 ) : null}
                 <p className="sub" style={{ color: "var(--muted)", fontSize: 12.5, marginTop: 8 }}>
-                  Przeciągnij suwak, żeby porównać oryginał z wersją po obróbce.
+                  Przeciągnij suwak, żeby porównać oryginał z wersją po obróbce.{variants.length > 1 ? " Kliknij miniaturę, żeby porównać inny wariant." : ""}
                 </p>
+                {res?.warnings?.length > 0 && <p className="note warn">Część wariantów się nie udała: {res.warnings[0]}</p>}
               </>
             )}
           </div>
@@ -533,7 +547,7 @@ function JobModal({ job, onClose, onRerun, onDelete, onAiDone }) {
             )}
 
             {job.status === "done" && (job.type === "photo" || job.type === "ai") && (
-              <AiEdit job={job} onDone={onAiDone} />
+              <AiEdit job={job} pickedUrl={variants.length ? after : null} onDone={onAiDone} />
             )}
 
             <div className="section-label">Akcje</div>
@@ -549,34 +563,95 @@ function JobModal({ job, onClose, onRerun, onDelete, onAiDone }) {
   );
 }
 
-function AiEdit({ job, onDone }) {
+async function uploadTo(prefix, file) {
+  const safe = file.name.normalize("NFD").replace(/[^\w.\-]+/g, "_");
+  const blob = await upload(`${prefix}/${safe}`, file, {
+    access: "public",
+    handleUploadUrl: "/api/upload",
+    multipart: file.size > 20 * 1024 * 1024,
+  });
+  return blob.url;
+}
+
+function AiEdit({ job, pickedUrl, onDone }) {
   const sources = useMemo(() => {
     const list = [];
-    const out = job.result?.outputs?.[0];
-    if (out) list.push({ id: "out", label: job.type === "ai" ? "Wynik tej edycji AI" : "Wersja po obróbce", url: out.url });
-    if (job.type !== "ai") list.push({ id: "orig", label: "Oryginał", url: job.input.url });
+    if (job.type !== "ai") list.push({ id: "orig", label: "Oryginał (zalecane)", url: job.input.url });
+    const out = pickedUrl || job.result?.outputs?.[0]?.url;
+    if (out) list.push({ id: "out", label: job.type === "ai" ? "Wybrany wariant tej edycji" : "Wersja po obróbce", url: out });
     return list;
-  }, [job]);
+  }, [job, pickedUrl]);
   const [src, setSrc] = useState(sources[0]?.id);
-  const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState("gemini");
+  const [prompt, setPrompt] = useState(job.type === "ai" ? "" : AI_SUGGESTIONS[0]);
+  const [models, setModels] = useState(["gpt", "gemini"]);
+  const [variants, setVariants] = useState(2);
+  const [metal, setMetal] = useState("auto");
+  const [extras, setExtras] = useState(job.params?.extraUrls || []);
+  const [refs, setRefs] = useState([]);
+  const [chosenRefs, setChosenRefs] = useState(new Set());
   const [busy, setBusy] = useState(false);
+  const [upBusy, setUpBusy] = useState("");
   const [err, setErr] = useState("");
+  const extraInput = useRef(null);
+  const refInput = useRef(null);
+
+  useEffect(() => {
+    fetch("/api/refs").then((r) => r.json()).then((j) => {
+      setRefs(j.refs || []);
+      setChosenRefs(new Set((j.refs || []).slice(0, 2).map((r) => r.url)));
+    }).catch(() => {});
+  }, []);
+
+  const toggle = (set, v) => { const n = new Set(set); n.has(v) ? n.delete(v) : n.add(v); return n; };
+
+  async function addExtras(files) {
+    setUpBusy("extra");
+    try {
+      const urls = [];
+      for (const f of files) urls.push(await uploadTo("uploads", f));
+      setExtras((p) => [...p, ...urls].slice(0, 4));
+    } catch (e) { setErr(e.message); }
+    setUpBusy("");
+  }
+
+  async function addRefs(files) {
+    setUpBusy("ref");
+    try {
+      for (const f of files) {
+        const url = await uploadTo("refs", f);
+        setRefs((p) => [{ url, name: f.name }, ...p]);
+        setChosenRefs((p) => new Set([...p, url]));
+      }
+    } catch (e) { setErr(e.message); }
+    setUpBusy("");
+  }
+
+  async function removeRef(url) {
+    if (!confirm("Usunąć ten wzorzec z biblioteki?")) return;
+    await fetch("/api/refs", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url }) });
+    setRefs((p) => p.filter((r) => r.url !== url));
+    setChosenRefs((p) => { const n = new Set(p); n.delete(url); return n; });
+  }
 
   async function run() {
     setBusy(true);
     setErr("");
-    const s = sources.find((x) => x.id === src);
+    const s = sources.find((x) => x.id === src) || sources[0];
     const r = await fetch("/api/ai-edit", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageUrl: s.url, name: job.input.name, prompt, model, parentId: job.id }),
+      body: JSON.stringify({
+        imageUrl: s.url, name: job.input.name, prompt, models, variants, metal,
+        extraUrls: extras, refUrls: [...chosenRefs].slice(0, 3), parentId: job.id,
+      }),
     }).catch(() => null);
     const j = r ? await r.json().catch(() => ({})) : {};
     setBusy(false);
     if (j.job?.status === "done") onDone(j.job);
     else setErr(j.job?.result?.error || j.error || "Nie udało się");
   }
+
+  const total = models.length * variants;
 
   return (
     <>
@@ -585,17 +660,59 @@ function AiEdit({ job, onDone }) {
         <select className="sel" value={src} onChange={(e) => setSrc(e.target.value)}>
           {sources.map((s) => <option key={s.id} value={s.id}>Źródło: {s.label}</option>)}
         </select>
+
+        <div className="mini-label">Inne ujęcia tego samego pierścionka ({extras.length}/4) – pomagają odtworzyć detale</div>
+        <div className="thumbs">
+          {extras.map((u) => (
+            <button key={u} className="thumb" title="Usuń" onClick={() => setExtras((p) => p.filter((x) => x !== u))}><img src={u} alt="" /><i>✕</i></button>
+          ))}
+          {extras.length < 4 && (
+            <button className="thumb add" onClick={() => extraInput.current?.click()} disabled={upBusy === "extra"}>
+              {upBusy === "extra" ? <span className="spinner dark" /> : "+"}
+            </button>
+          )}
+          <input ref={extraInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addExtras([...e.target.files]); e.target.value = ""; }} />
+        </div>
+
+        <div className="mini-label">Wzorce stylu (np. zdjęcia od Julii) – zaznacz 1–3</div>
+        <div className="thumbs">
+          {refs.map((r) => (
+            <button key={r.url} className={`thumb ref ${chosenRefs.has(r.url) ? "on" : ""}`} onClick={() => setChosenRefs((p) => toggle(p, r.url))}
+              onContextMenu={(e) => { e.preventDefault(); removeRef(r.url); }} title="Kliknij, żeby zaznaczyć. Prawy przycisk – usuń z biblioteki.">
+              <img src={r.url} alt={r.name} />
+            </button>
+          ))}
+          <button className="thumb add" onClick={() => refInput.current?.click()} disabled={upBusy === "ref"} title="Dodaj wzorzec do biblioteki">
+            {upBusy === "ref" ? <span className="spinner dark" /> : "+"}
+          </button>
+          <input ref={refInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addRefs([...e.target.files]); e.target.value = ""; }} />
+        </div>
+
         <textarea className="prompt" placeholder="Np. dopasuj pierścionek do palca, żeby siedział prosto" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
         <div className="chips">
           {AI_SUGGESTIONS.map((s) => (
             <button key={s} type="button" className="chip" onClick={() => setPrompt(s)}>{s.split(" – ")[0]}</button>
           ))}
         </div>
-        <select className="sel" value={model} onChange={(e) => setModel(e.target.value)}>
-          {Object.entries(AI_MODELS).map(([k, m]) => <option key={k} value={k}>Model: {m.label}</option>)}
+
+        <select className="sel" value={metal} onChange={(e) => setMetal(e.target.value)}>
+          {Object.entries(METALS).map(([k, m]) => <option key={k} value={k}>Metal: {m.label}</option>)}
         </select>
+        <div className="chips">
+          {Object.entries(AI_MODELS).map(([k, m]) => (
+            <button key={k} type="button" className={`chip ${models.includes(k) ? "on" : ""}`}
+              onClick={() => setModels((p) => (p.includes(k) ? (p.length > 1 ? p.filter((x) => x !== k) : p) : [...p, k]))}>{m.label}</button>
+          ))}
+        </div>
+        <div className="ctrl" style={{ margin: 0 }}>
+          <label>Wariantów z każdego modelu</label>
+          <div className="seg">
+            {[1, 2, 3].map((n) => <button key={n} type="button" className={variants === n ? "on" : ""} onClick={() => setVariants(n)}>{n}</button>)}
+          </div>
+        </div>
+
         <button className="btn primary" disabled={busy || !prompt.trim()} onClick={run}>
-          {busy ? <><span className="spinner" /> Generowanie (do 1 min)…</> : "Wykonaj edycję AI"}
+          {busy ? <><span className="spinner" /> Generowanie {total} wersji (do 1 min)…</> : `Wykonaj edycję AI (${total} ${total === 1 ? "wersja" : total < 5 ? "wersje" : "wersji"})`}
         </button>
         {err && <div className="errbox">{err}</div>}
         <p className="note warn">AI może zmienić detale biżuterii (kamień, łapki, wzór). Zawsze porównaj wynik z oryginałem przed publikacją w sklepie.</p>
