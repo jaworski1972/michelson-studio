@@ -15,7 +15,7 @@ const BLOB_RE = /^https:\/\/[a-z0-9.-]+\.blob\.vercel-storage\.com\//;
 function buildPrompt({ prompt, extras, refs, metal }) {
   const lines = [
     "You are retouching a professional jewelry product photo for an online store.",
-    "IMAGE 1 is the product to edit — the result must show exactly this piece of jewelry.",
+    "IMAGE 1 is the product to edit — the result must show exactly this piece of jewelry, from the same camera angle and perspective as IMAGE 1.",
   ];
   if (extras > 0) {
     lines.push(
@@ -28,13 +28,13 @@ function buildPrompt({ prompt, extras, refs, metal }) {
     const b = 1 + extras + refs;
     lines.push(
       `IMAGE${refs > 1 ? `S ${a}–${b} are` : ` ${a} is`} STYLE REFERENCE${refs > 1 ? "S" : ""} from our photo retoucher (different products). ` +
-        "Copy ONLY the look: lighting, background, shadow, framing, metal polish and stone brilliance. " +
-        "NEVER copy the jewelry design, stones or ornaments from the style references."
+        "Copy ONLY the look: lighting, pure white background, soft shadow, metal polish and stone brilliance. " +
+        "IGNORE their camera angle, composition and jewelry design — never copy stones, prongs, side stones or ornaments from them."
     );
   }
   lines.push(
     "Keep the jewelry design exactly identical to IMAGE 1: same stones (shape, size, count, cut, color), prongs, setting, " +
-      "ornaments, engravings and band profile. Do not invent or remove any element."
+      "ornaments, engravings and band profile. Do not invent or remove any element — in particular do not add side stones, halos or extra pavé.",
   );
   if (metal && METALS[metal]?.en) lines.push(`Metal: ${METALS[metal].en}. Keep this metal colour accurate.`);
   lines.push("Photorealistic result, no text or watermarks.", "", "Requested edit (may be in Polish):", prompt);
@@ -91,8 +91,20 @@ async function editGpt(urls, text, auth) {
 async function upscale(buf, side, fit = false) {
   if (fit) {
     // packshot: wytnij produkt z białego tła i ustaw go tak, by zajmował ~72% kwadratu
-    const flat = await sharp(buf).flatten({ background: "#ffffff" }).png().toBuffer();
-    const trimmed = await sharp(flat).trim({ background: "#ffffff", threshold: 18 }).toBuffer({ resolveWithObject: true });
+    // model często daje lekko szare tło – rozjaśnij tak, by tło było czysto białe (bez widocznej ramki po dopasowaniu)
+    const base = sharp(buf).flatten({ background: "#ffffff" }).removeAlpha();
+    const { data, info } = await base.clone().raw().toBuffer({ resolveWithObject: true });
+    const bg = [0, 0, 0];
+    const pts = [];
+    const step = Math.max(1, Math.floor(Math.min(info.width, info.height) / 40));
+    for (let x = 0; x < info.width; x += step) pts.push([x, 0], [x, info.height - 1]);
+    for (let y = 0; y < info.height; y += step) pts.push([0, y], [info.width - 1, y]);
+    for (let c = 0; c < 3; c++) {
+      const vals = pts.map(([x, y]) => data[(y * info.width + x) * info.channels + c]).sort((a, b) => a - b);
+      bg[c] = Math.max(200, vals[Math.floor(vals.length / 2)]);
+    }
+    const flat = await base.linear(bg.map((v) => 255 / v), [0, 0, 0]).png().toBuffer();
+    const trimmed = await sharp(flat).trim({ background: "#ffffff", threshold: 12 }).toBuffer({ resolveWithObject: true });
     const tw = trimmed.info.width, th = trimmed.info.height;
     const target = Math.round(side * 0.72);
     const k = target / Math.max(tw, th);

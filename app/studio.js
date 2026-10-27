@@ -598,7 +598,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
   useEffect(() => {
     fetch("/api/refs").then((r) => r.json()).then((j) => {
       setRefs(j.refs || []);
-      setChosenRefs(new Set((j.refs || []).slice(0, 2).map((r) => r.url)));
+      // domyślnie nic – wzorzec powinien pasować kątem i kolorem metalu, więc wybiera człowiek
     }).catch(() => {});
   }, []);
 
@@ -674,7 +674,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
           <input ref={extraInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addExtras([...e.target.files]); e.target.value = ""; }} />
         </div>
 
-        <div className="mini-label">Wzorce stylu (np. zdjęcia od Julii) – zaznacz 1–3</div>
+        <div className="mini-label">Wzorce stylu (zdjęcia od Julii) – zaznacz 1–2 o podobnym kącie i kolorze metalu</div>
         <div className="thumbs">
           {refs.map((r) => (
             <button key={r.url} className={`thumb ref ${chosenRefs.has(r.url) ? "on" : ""}`} onClick={() => setChosenRefs((p) => toggle(p, r.url))}
