@@ -114,7 +114,7 @@ async function upscale(buf, side, fit = false, fill = 0.55) {
       const vals = pts.map(([x, y]) => data[(y * info.width + x) * info.channels + c]).sort((a, b) => a - b);
       bg[c] = Math.max(200, vals[Math.floor(vals.length / 2)]);
     }
-    const flat = await base.linear(bg.map((v) => 255 / v), [0, 0, 0]).png().toBuffer();
+    const flat = await base.linear(bg.map((v) => 255 / Math.max(200, v - 6)), [0, 0, 0]).png().toBuffer(); // lekki „przepał” tła → czysta biel 255
     const trimmed = await sharp(flat).trim({ background: "#ffffff", threshold: 12 }).toBuffer({ resolveWithObject: true });
     const tw = trimmed.info.width, th = trimmed.info.height;
     const target = Math.round(side * fill);
