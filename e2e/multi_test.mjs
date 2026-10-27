@@ -19,14 +19,15 @@ if (!existing.length) {
   for (const f of fs.readdirSync("refs")) refs.push({ url: await up(`refs/${f}`, `refs/${f}`), name: f });
   log("seeded refs", refs.length);
 }
-const refUrls = refs.filter((r) => /koniak/.test(r.name || r.url)).map((r) => r.url).slice(0, 3);
+const refs2 = (await (await fetch(`${BASE}/api/refs`, { headers: H })).json()).refs;
+const refUrls = refs2.filter((r) => /michelson-(solitaire|pave)-3-4\./.test(r.name)).map((r) => r.url).slice(0, 2);
 log("refs used", refUrls.length);
 // 2) the twisted ring: original + 2 other angles
 const main = await up("twist.jpg", "uploads/pierscionek-pleciony.jpg");
 const extras = [await up("twist2.jpg", "uploads/pierscionek-pleciony-2.jpg"), await up("twist3.jpg", "uploads/pierscionek-pleciony-3.jpg")];
 const prompt = process.env.PROMPT;
 const t = Date.now();
-const r = await fetch(`${BASE}/api/ai-edit`, { method: "POST", headers: H, body: JSON.stringify({ imageUrl: main, extraUrls: extras, refUrls, name: "pierscionek-pleciony.jpg", prompt, models: ["gpt", "gemini"], variants: 2, metal: "yellow" }) });
+const r = await fetch(`${BASE}/api/ai-edit`, { method: "POST", headers: H, body: JSON.stringify({ imageUrl: main, extraUrls: extras, refUrls, name: "pierscionek-pleciony.jpg", prompt, models: ["gpt", "gemini"], variants: 2, metal: "yellow", fill: 0.55 }) });
 const j = await r.json();
 log("AI", Math.round((Date.now() - t) / 1000) + "s", j.job?.status, j.job?.result?.error || "");
 for (const o of j.job?.result?.outputs || []) if (o.variant) log(o.label, o.url);
