@@ -107,7 +107,13 @@ export async function POST(request) {
     await writeResult(job.id, result);
     return NextResponse.json({ job: { ...job, result, status: "done" } });
   } catch (e) {
-    const result = { ok: false, error: `Edycja AI nie powiodła się: ${e.message}` };
+    const credits = /free tier|paid credits|top-up|insufficient/i.test(e.message);
+    const result = {
+      ok: false,
+      error: credits
+        ? "Edycja AI wymaga doładowania kredytów AI Gateway w Vercelu (Vercel → AI Gateway → Top up). Po doładowaniu spróbuj ponownie."
+        : `Edycja AI nie powiodła się: ${e.message}`,
+    };
     await writeResult(job.id, result);
     return NextResponse.json({ job: { ...job, result, status: "error" } });
   }
