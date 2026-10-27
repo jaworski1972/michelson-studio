@@ -11,6 +11,18 @@ export const maxDuration = 300;
 const GATEWAY = "https://ai-gateway.vercel.sh/v1";
 const BLOB_RE = /^https:\/\/[a-z0-9.-]+\.blob\.vercel-storage\.com\//;
 
+// Druga faza: poprawa wyłącznie kamienia głównego na gotowym wyniku (mniej obrazów = mniej przekłamań).
+function buildStonePrompt({ prompt }) {
+  return [
+    "You are retouching the MAIN CENTRE STONE ONLY in a finished jewelry catalogue photo (IMAGE 1).",
+    "IMAGE 2 is a reference loose diamond showing the desired look: crisp, high-contrast facets (deep black and brilliant white), sharp facet edges, lively sparkle, flawless clarity.",
+    "Re-render ONLY the main centre stone of IMAGE 1 so its facet pattern, brilliance, contrast and sharpness match IMAGE 2, adapted to the stone's exact outline, size, position, perspective and the prongs that hold it.",
+    "Keep the stone's cut/shape and its body colour exactly as in IMAGE 1 (a cognac stone stays cognac, a white stone stays white).",
+    "EVERYTHING ELSE must stay pixel-identical to IMAGE 1: the metal, prongs, setting, side stones, pavé, ornaments, band, background, shadow, framing and camera angle. Do not move, resize or redesign anything.",
+    prompt ? `Additional note (may be in Polish): ${prompt}` : "",
+  ].filter(Boolean).join("\n");
+}
+
 // Builds the instruction. Image order sent to the model: [product, ...extra angles, ...style refs]
 function buildPrompt({ prompt, extras, refs, metal, stone }) {
   const lines = [
@@ -173,27 +185,30 @@ export async function POST(request) {
   const extraUrls = (body.extraUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 4);
   const refUrls = (body.refUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 3);
   const stoneUrl = BLOB_RE.test(body.stoneUrl || "") ? body.stoneUrl : null;
+  const stoneOnly = !!(body.stoneOnly && stoneUrl);
   const models = (Array.isArray(body.models) ? body.models : [body.model || "gemini"]).filter((m) => AI_MODELS[m]);
   const variants = Math.max(1, Math.min(3, parseInt(body.variants || 1, 10)));
   const metal = METALS[body.metal] ? body.metal : "auto";
-  if (!imageUrl || !prompt?.trim() || !models.length) return NextResponse.json({ error: "Podaj zdjęcie i polecenie" }, { status: 400 });
+  if (!imageUrl || (!prompt?.trim() && !stoneOnly) || !models.length) return NextResponse.json({ error: "Podaj zdjęcie i polecenie" }, { status: 400 });
   if (!BLOB_RE.test(imageUrl)) return NextResponse.json({ error: "Nieprawidłowy plik" }, { status: 400 });
 
   const job = {
     id: newJobId(),
     type: "ai",
     input: { url: imageUrl, name: name || "zdjecie.jpg" },
-    params: { prompt, models, variants, metal, extraUrls, refUrls, stoneUrl },
-    presetName: `Edycja AI · ${models.map((m) => AI_MODELS[m].label).join(" + ")}${variants > 1 ? ` · ${variants} warianty` : ""}`,
+    params: { prompt, models, variants, metal, extraUrls: stoneOnly ? [] : extraUrls, refUrls: stoneOnly ? [] : refUrls, stoneUrl, stoneOnly },
+    presetName: `${stoneOnly ? "Poprawa kamienia" : "Edycja AI"} · ${models.map((m) => AI_MODELS[m].label).join(" + ")}${variants > 1 ? ` · ${variants} warianty` : ""}`,
     parentId: parentId || null,
     user: user?.name || "?",
     createdAt: new Date().toISOString(),
   };
   await saveJob(job);
   const t0 = Date.now();
-  const text = buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal, stone: !!stoneUrl });
-  const urls = [imageUrl, ...extraUrls, ...refUrls, ...(stoneUrl ? [stoneUrl] : [])];
-  const fit = /packshot/i.test(prompt);
+  const text = stoneOnly
+    ? buildStonePrompt({ prompt })
+    : buildPrompt({ prompt, extras: extraUrls.length, refs: refUrls.length, metal: metal === "auto" ? null : metal, stone: !!stoneUrl });
+  const urls = stoneOnly ? [imageUrl, stoneUrl] : [imageUrl, ...extraUrls, ...refUrls, ...(stoneUrl ? [stoneUrl] : [])];
+  const fit = stoneOnly || /packshot/i.test(prompt || "");
   const fill = Math.max(0.35, Math.min(0.85, parseFloat(body.fill) || 0.55));
 
   try {

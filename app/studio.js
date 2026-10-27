@@ -589,6 +589,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
   const [fill, setFill] = useState(0.55);
   const [stones, setStones] = useState([]);
   const [stone, setStone] = useState(null);
+  const [stoneOnly, setStoneOnly] = useState(job.type === "ai");
   const [gen, setGen] = useState({ open: false, cut: "round", color: "white", view: "angle", busy: false });
   const stoneInput = useRef(null);
   const [extras, setExtras] = useState(job.params?.extraUrls || []);
@@ -680,6 +681,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         imageUrl: s.url, name: job.input.name, prompt, models, variants, metal, fill, stoneUrl: stone,
+        stoneOnly: !!stone && stoneOnly,
         extraUrls: extras, refUrls: [...chosenRefs].slice(0, 3), parentId: job.id,
       }),
     }).catch(() => null);
@@ -741,6 +743,12 @@ function AiEdit({ job, pickedUrl, onDone }) {
           </button>
           <input ref={stoneInput} type="file" accept="image/*" multiple hidden onChange={(e) => { addStones([...e.target.files]); e.target.value = ""; }} />
         </div>
+        {stone && (
+          <label className="check" style={{ margin: 0 }}>
+            <input type="checkbox" checked={stoneOnly} onChange={(e) => setStoneOnly(e.target.checked)} />
+            Popraw tylko kamień (zalecane na gotowym, wybranym wariancie – reszta zostaje bez zmian)
+          </label>
+        )}
         {gen.open && (
           <div className="note" style={{ display: "grid", gap: 6 }}>
             <b style={{ color: "var(--ink)" }}>Wygeneruj idealny kamień</b>
@@ -793,7 +801,7 @@ function AiEdit({ job, pickedUrl, onDone }) {
           </div>
         </div>
 
-        <button className="btn primary" disabled={busy || !prompt.trim()} onClick={run}>
+        <button className="btn primary" disabled={busy || (!prompt.trim() && !(stone && stoneOnly))} onClick={run}>
           {busy ? <><span className="spinner" /> Generowanie {total} wersji (do 1 min)…</> : `Wykonaj edycję AI (${total} ${total === 1 ? "wersja" : total < 5 ? "wersje" : "wersji"})`}
         </button>
         {err && <div className="errbox">{err}</div>}
