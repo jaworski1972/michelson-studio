@@ -378,6 +378,10 @@ function PhotoControls({ p, set }) {
       {p.sharpen?.enabled && (
         <Range label="Siła wyostrzenia" value={p.sharpen.amount} min={0.1} max={1} step={0.05} onChange={(v) => up("sharpen", { amount: v })} />
       )}
+      <label className="check"><input type="checkbox" checked={(ph.studio || 0) > 0} onChange={(e) => up("photo", { studio: e.target.checked ? 0.5 : 0, shadow: e.target.checked })} /> Styl katalogowy (połysk metalu, kontrast kamienia, cień)</label>
+      {(ph.studio || 0) > 0 && (
+        <Range label="Siła stylu katalogowego" value={ph.studio} min={0.2} max={1} step={0.05} onChange={(v) => up("photo", { studio: v })} />
+      )}
       <label className="check"><input type="checkbox" checked={!!ph.auto_wb} onChange={(e) => up("photo", { auto_wb: e.target.checked })} /> Automatyczny balans bieli</label>
       <ColorControls p={p} set={set} />
       <div className="ctrl">

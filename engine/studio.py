@@ -40,7 +40,7 @@ DEFAULTS = {
     "crop_offset": {"x": 0.5, "y": 0.5},
     # photos
     "photo": {"auto_wb": False, "max_side": 3000, "square": False,
-              "packshot": False, "background": "none", "autocrop": False, "margin": 1.5, "target_side": 2000,
+              "packshot": False, "background": "none", "autocrop": False, "margin": 1.5, "target_side": 2000, "studio": 0,
               "format": "jpg"},
 }
 
@@ -454,6 +454,50 @@ def product_mask(img):
     return m.astype(np.float32)
 
 
+def studio_look(f, alpha, strength):
+    """Catalogue look on the product only: local contrast (polished metal), deeper blacks and
+    brighter highlights (crisp facets), neutral metal."""
+    img = np.clip(f, 0, 255).astype(np.uint8)
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    L = lab[:, :, 0]
+    clahe = cv2.createCLAHE(clipLimit=1.5 + 2.5 * strength, tileGridSize=(8, 8))
+    L2 = clahe.apply(L).astype(np.float32) / 255.0
+    # S-curve: deeper shadows in facets/edges, cleaner highlights on metal
+    k = 0.6 + 1.6 * strength
+    L2 = 0.5 + np.tanh((L2 - 0.5) * (1 + k)) / (2 * np.tanh(0.5 * (1 + k)))
+    # clarity: unsharp at medium radius
+    blur = cv2.GaussianBlur(L2, (0, 0), 6)
+    L2 = np.clip(L2 + (L2 - blur) * 0.6 * strength, 0, 1)
+    Lf = L.astype(np.float32) / 255.0
+    w = alpha * strength
+    Lout = Lf * (1 - w) + L2 * w
+    lab[:, :, 0] = np.clip(Lout * 255, 0, 255).astype(np.uint8)
+    # slightly reduce colour noise / cast on the product (white metals look cleaner)
+    ab = lab[:, :, 1:].astype(np.float32) - 128
+    lab[:, :, 1:] = np.clip(ab * (1 - 0.35 * w[:, :, None]) + 128, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR).astype(np.float32)
+
+
+def add_soft_shadow(f, alpha, strength=0.35):
+    """Soft contact shadow under the product (catalogue style), only on the background."""
+    h, w = alpha.shape
+    ys, xs = np.where(alpha > 0.5)
+    if not len(ys):
+        return f
+    y0, y1 = ys.min(), ys.max()
+    oh = max(1, y1 - y0)
+    # squash the silhouette vertically onto its base line -> an ellipse-like footprint
+    sq = cv2.resize(alpha, (w, max(2, int(h * 0.12))), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros_like(alpha)
+    top = int(y1 - sq.shape[0] * (y1 / h) + oh * 0.02)
+    top = max(0, min(h - sq.shape[0], top))
+    canvas[top:top + sq.shape[0], :] = sq
+    sh = cv2.GaussianBlur(canvas, (0, 0), max(6, oh * 0.09))
+    sh = sh / max(1e-6, sh.max()) * strength
+    sh = sh * (1 - alpha)
+    return f * (1 - sh[:, :, None])
+
+
 def packshot(img, ph):
     """Neutralise colour cast and exposure using the background, optionally put product on pure white."""
     m = product_mask(img)
@@ -466,11 +510,16 @@ def packshot(img, ph):
         target = 238.0
         f = f * min(2.2, max(0.6, target / max(lum, 1)))   # background -> near white
     f = np.clip(f, 0, 255)
+    a2 = cv2.GaussianBlur(np.clip((m - 0.12) / 0.76, 0, 1), (0, 0), 0.8)
+    studio = float(ph.get("studio", 0) or 0)
+    if studio > 0:
+        f = studio_look(f, a2, studio)
     if ph.get("background") == "white":
-        a = np.clip((m - 0.12) / 0.76, 0, 1)
-        a = cv2.GaussianBlur(a, (0, 0), 0.8)[:, :, None]
+        a = a2[:, :, None]
         f = f * a + 255.0 * (1 - a)
-    out = f.astype(np.uint8)
+        if ph.get("shadow", studio > 0):
+            f = add_soft_shadow(f, a2, float(ph.get("shadow_strength", 0.22)))
+    out = np.clip(f, 0, 255).astype(np.uint8)
     if ph.get("autocrop"):
         ys, xs = np.where(m > 0.5)
         if len(xs):
