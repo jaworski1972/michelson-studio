@@ -787,6 +787,8 @@ function AiEdit({ job, pickedUrl, onDone }) {
         <div className="chips">
           {Object.entries(AI_MODELS).map(([k, m]) => (
             <button key={k} type="button" className={`chip ${models.includes(k) ? "on" : ""}`}
+              disabled={!!stone && stoneOnly && k !== "gpt"}
+              title={stone && stoneOnly && k !== "gpt" ? "Poprawę samego kamienia robi GPT – Gemini w tym trybie psuje kadr" : undefined}
               onClick={() => setModels((p) => (p.includes(k) ? (p.length > 1 ? p.filter((x) => x !== k) : p) : [...p, k]))}>{m.label}</button>
           ))}
         </div>

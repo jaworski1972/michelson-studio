@@ -24,14 +24,16 @@ function buildStonePrompt({ prompt }) {
   ].filter(Boolean).join("\n");
 }
 
-// Odcisk obrazu do kontroli, czy model nie zwrócił czegoś zupełnie innego (np. sam kamień-wzorzec)
+// Sylwetka produktu (maska „nie-białe” 64×64) – kontrola, czy model zwrócił to samo zdjęcie,
+// a nie np. sam kamień-wzorzec albo zbliżenie
 async function signature(buf) {
-  return sharp(buf).greyscale().resize(48, 48, { fit: "fill" }).raw().toBuffer();
+  const g = await sharp(buf).greyscale().resize(64, 64, { fit: "fill" }).raw().toBuffer();
+  return g.map((v) => (v < 235 ? 1 : 0));
 }
-function sigDiff(a, b) {
-  let d = 0;
-  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
-  return d / a.length / 255;
+function overlap(a, b) {
+  let i = 0, u = 0;
+  for (let k = 0; k < a.length; k++) { i += a[k] & b[k]; u += a[k] | b[k]; }
+  return u ? i / u : 1;
 }
 
 // Builds the instruction. Image order sent to the model: [product, ...extra angles, ...style refs]
@@ -197,7 +199,8 @@ export async function POST(request) {
   const refUrls = (body.refUrls || []).filter((u) => BLOB_RE.test(u)).slice(0, 3);
   const stoneUrl = BLOB_RE.test(body.stoneUrl || "") ? body.stoneUrl : null;
   const stoneOnly = !!(body.stoneOnly && stoneUrl);
-  const models = (Array.isArray(body.models) ? body.models : [body.model || "gemini"]).filter((m) => AI_MODELS[m]);
+  // poprawa samego kamienia: tylko GPT – Gemini w tym trybie oddaje sam wzorzec albo zbliżenie
+  const models = stoneOnly ? ["gpt"] : (Array.isArray(body.models) ? body.models : [body.model || "gemini"]).filter((m) => AI_MODELS[m]);
   const variants = Math.max(1, Math.min(3, parseInt(body.variants || 1, 10)));
   const metal = METALS[body.metal] ? body.metal : "auto";
   if (!imageUrl || (!prompt?.trim() && !stoneOnly) || !models.length) return NextResponse.json({ error: "Podaj zdjęcie i polecenie" }, { status: 400 });
@@ -240,9 +243,9 @@ export async function POST(request) {
           upscale(buf, 2000, fit, fill),
         ]);
         if (baseSig) {
-          const diff = sigDiff(baseSig, await signature(big.buf));
-          console.log("stone-check", m, v, diff.toFixed(3));
-          if (diff > 0.1) throw new Error(`${AI_MODELS[m].label} zwrócił inne zdjęcie zamiast poprawionego pierścionka – wynik pominięty (odchylenie ${Math.round(diff * 100)}%)`);
+          const iou = overlap(baseSig, await signature(big.buf));
+          console.log("stone-check", m, v, iou.toFixed(3));
+          if (iou < 0.6) throw new Error(`${AI_MODELS[m].label} zwrócił inne zdjęcie zamiast poprawionego pierścionka – wynik pominięty (zgodność ${Math.round(iou * 100)}%)`);
         }
         const bigBlob = await put(`jobs/${job.id}/ai_${tag}_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
         const label = `${AI_MODELS[m].label}${variants > 1 ? ` · wariant ${v}` : ""}`;
