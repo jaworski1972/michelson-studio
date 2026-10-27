@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { put } from "@vercel/blob";
+import sharp from "sharp";
 import { getVercelOidcToken } from "@vercel/oidc";
 import { userFromRequest } from "@/lib/auth";
 import { newJobId, saveJob, writeResult } from "@/lib/jobs";
@@ -66,6 +67,21 @@ async function editGpt(imageUrl, prompt, auth) {
   throw new Error("Model nie zwrócił obrazu");
 }
 
+// Powiększenie wyniku AI do sklepu: dłuższy bok `side` px (Lanczos), białe tło, delikatne doostrzenie.
+async function upscale(buf, side) {
+  const img = sharp(buf).flatten({ background: "#ffffff" });
+  const meta = await img.metadata();
+  const long = Math.max(meta.width || 0, meta.height || 0);
+  let pipe = img;
+  if (long && long < side) {
+    pipe = pipe
+      .resize({ width: meta.width >= meta.height ? side : null, height: meta.height > meta.width ? side : null, kernel: "lanczos3" })
+      .sharpen({ sigma: 0.7, m1: 0.6, m2: 1.2 });
+  }
+  const out = await pipe.jpeg({ quality: 94, chromaSubsampling: "4:4:4", mozjpeg: true }).toBuffer({ resolveWithObject: true });
+  return { buf: out.data, w: out.info.width, h: out.info.height };
+}
+
 function dataUrlToBuffer(u) {
   const m = /^data:([^;]+);base64,(.*)$/s.exec(u);
   if (!m) throw new Error("Nieoczekiwany format odpowiedzi");
@@ -96,13 +112,19 @@ export async function POST(request) {
     const auth = await token();
     const { buf, type } = model === "gpt" ? await editGpt(imageUrl, prompt, auth) : await editGemini(imageUrl, prompt, auth);
     const ext = type.includes("jpeg") ? "jpg" : type.includes("webp") ? "webp" : "png";
-    const blob = await put(`jobs/${job.id}/ai.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type });
+    const raw = await put(`jobs/${job.id}/ai.${ext}`, buf, { access: "public", addRandomSuffix: true, contentType: type });
+    const big = await upscale(buf, 2000);
+    const bigBlob = await put(`jobs/${job.id}/ai_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
     const result = {
       ok: true,
       finishedAt: new Date().toISOString(),
       seconds: Math.round((Date.now() - t0) / 100) / 10,
-      outputs: [{ key: "ai", label: "Edycja AI", file: `ai.${ext}`, url: blob.url, size: buf.length }],
-      previews: { before: imageUrl, after: blob.url },
+      info: { w: big.w, h: big.h },
+      outputs: [
+        { key: "ai", label: `Edycja AI · ${big.w}×${big.h} (JPG)`, file: "ai_2000.jpg", url: bigBlob.url, size: big.buf.length },
+        { key: "ai_raw", label: "Edycja AI · oryginał z modelu", file: `ai.${ext}`, url: raw.url, size: buf.length },
+      ],
+      previews: { before: imageUrl, after: bigBlob.url },
     };
     await writeResult(job.id, result);
     return NextResponse.json({ job: { ...job, result, status: "done" } });
