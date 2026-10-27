@@ -27,13 +27,16 @@ function buildStonePrompt({ prompt }) {
 // Sylwetka produktu (maska „nie-białe” 64×64) – kontrola, czy model zwrócił to samo zdjęcie,
 // a nie np. sam kamień-wzorzec albo zbliżenie
 async function signature(buf) {
-  const g = await sharp(buf).greyscale().resize(64, 64, { fit: "fill" }).raw().toBuffer();
-  return g.map((v) => (v < 235 ? 1 : 0));
+  return sharp(buf).greyscale().resize(64, 64, { fit: "fill" }).raw().toBuffer();
 }
-function overlap(a, b) {
-  let i = 0, u = 0;
-  for (let k = 0; k < a.length; k++) { i += a[k] & b[k]; u += a[k] | b[k]; }
-  return u ? i / u : 1;
+// zgodność sylwetki (IoU) i średnia różnica jasności; dobre poprawki: IoU ~0.9+, różnica <1%
+function compare(a, b) {
+  let i = 0, u = 0, d = 0;
+  for (let k = 0; k < a.length; k++) {
+    const x = a[k] < 235, y = b[k] < 235;
+    i += x && y; u += x || y; d += Math.abs(a[k] - b[k]);
+  }
+  return { iou: u ? i / u : 1, diff: d / a.length / 255 };
 }
 
 // Builds the instruction. Image order sent to the model: [product, ...extra angles, ...style refs]
@@ -243,9 +246,9 @@ export async function POST(request) {
           upscale(buf, 2000, fit, fill),
         ]);
         if (baseSig) {
-          const iou = overlap(baseSig, await signature(big.buf));
-          console.log("stone-check", m, v, iou.toFixed(3));
-          if (iou < 0.6) throw new Error(`${AI_MODELS[m].label} zwrócił inne zdjęcie zamiast poprawionego pierścionka – wynik pominięty (zgodność ${Math.round(iou * 100)}%)`);
+          const { iou, diff } = compare(baseSig, await signature(big.buf));
+          console.log("stone-check", m, v, iou.toFixed(3), diff.toFixed(3));
+          if (iou < 0.6 || diff > 0.03) throw new Error(`${AI_MODELS[m].label} zwrócił inne zdjęcie zamiast poprawionego pierścionka – wynik pominięty (zgodność ${Math.round(iou * 100)}%)`);
         }
         const bigBlob = await put(`jobs/${job.id}/ai_${tag}_2000.jpg`, big.buf, { access: "public", addRandomSuffix: true, contentType: "image/jpeg" });
         const label = `${AI_MODELS[m].label}${variants > 1 ? ` · wariant ${v}` : ""}`;
